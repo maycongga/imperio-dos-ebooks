@@ -224,6 +224,8 @@
         <input type="text" id="pPrecoAntigo" placeholder="Preço antigo (opcional)">
         <label style="color:var(--muted);font-size:13px">Arquivo do ebook (PDF ou EPUB)</label>
         <input type="file" id="pArquivo" accept=".pdf,.epub" required>
+        <label style="color:var(--muted);font-size:13px">Capa do ebook (imagem JPG, PNG ou WEBP — opcional)</label>
+        <input type="file" id="pCapa" accept="image/png,image/jpeg,image/webp">
         <div class="modal-botoes">
           <button type="button" class="btn-cancelar" onclick="fecharModalPublicar()">Cancelar</button>
           <button type="submit" class="auth-btn" id="btnPublicarEnviar">Publicar</button>
@@ -249,6 +251,8 @@
           <select id="aCategoria" required></select>
           <input type="text" id="aPreco" placeholder="Preço (ex: 19,90)" required>
           <input type="text" id="aPrecoAntigo" placeholder="Preço antigo (opcional)">
+          <label style="color:var(--muted);font-size:13px">Trocar a capa (opcional)</label>
+          <input type="file" id="aCapa" accept="image/png,image/jpeg,image/webp">
           <div class="modal-botoes">
             <button type="button" class="btn-cancelar" onclick="mostrarAdminLista()">Voltar</button>
             <button type="submit" class="auth-btn">Salvar</button>

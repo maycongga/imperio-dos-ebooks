@@ -487,6 +487,57 @@ supabaseClient.auth.getSession().then(({ data: { session } }) => aoMudarSessao(s
 // ============================================================
 const gridProdutos = document.getElementById("gridProdutos");
 
+// ---------- CAPAS ----------
+function urlCapa(path){
+  return supabaseClient.storage.from("capas-ebooks").getPublicUrl(path).data.publicUrl;
+}
+
+function capaHtml(p, cor, emoji){
+  if(p.capa_path){
+    return `<div class="capa capa-img"><img src="${esc(urlCapa(p.capa_path))}" alt="Capa de ${esc(p.titulo)}" loading="lazy"></div>`;
+  }
+  return `<div class="capa" style="background:${cor}">${emoji}</div>`;
+}
+
+// reduz a imagem (largura máx. 700px) e converte em JPG, para a loja carregar rápido
+function redimensionarImagem(arquivo, larguraMax){
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(arquivo);
+    const img = new Image();
+    img.onload = () => {
+      const fator = Math.min(1, larguraMax / img.width);
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.width * fator);
+      c.height = Math.round(img.height * fator);
+      const ctx = c.getContext("2d");
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, c.width, c.height);
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      c.toBlob(b => b ? resolve(b) : reject(new Error("falha")), "image/jpeg", 0.85);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("imagem inválida")); };
+    img.src = url;
+  });
+}
+
+// envia a capa para o Supabase; devolve { path } ou { erro }
+async function enviarCapa(arquivo){
+  if(!arquivo.type.startsWith("image/")) return { erro: "A capa precisa ser uma imagem (JPG, PNG ou WEBP)." };
+  if(arquivo.size > 10 * 1024 * 1024) return { erro: "Imagem muito grande (máximo 10 MB)." };
+  let blob;
+  try{
+    blob = await redimensionarImagem(arquivo, 700);
+  }catch(_e){
+    return { erro: "Não consegui ler essa imagem. Tente outra." };
+  }
+  const caminho = `capa-${Date.now()}.jpg`;
+  const { error } = await supabaseClient.storage
+    .from("capas-ebooks").upload(caminho, blob, { contentType: "image/jpeg" });
+  if(error) return { erro: "Erro ao enviar a capa: " + error.message };
+  return { path: caminho };
+}
+
 function formatarPreco(v){
   return Number(v).toFixed(2).replace(".", ",");
 }
@@ -495,7 +546,7 @@ async function carregarProdutos(){
   document.getElementById("contadorEbooks").textContent = "carregando ebooks...";
   const { data, error } = await supabaseClient
     .from("ebooks")
-    .select("id,titulo,categoria,preco,preco_antigo,criado_em,ativo")
+    .select("id,titulo,categoria,preco,preco_antigo,criado_em,ativo,capa_path")
     .order("criado_em", { ascending: false });
 
   if(error){
@@ -524,7 +575,7 @@ function renderizarProdutos(lista){
     const card = document.createElement("div");
     card.className = "produto";
     card.innerHTML = `
-      <div class="capa" style="background:${cor}">${emoji}</div>
+      ${capaHtml(p, cor, emoji)}
       <div class="produto-info">
         <h3>${esc(p.titulo)}</h3>
         <p>Ebook digital · acesso imediato</p>
@@ -697,18 +748,34 @@ async function publicarEbook(event){
     return false;
   }
 
+  let capaCaminho = null;
+  const arquivoCapa = document.getElementById("pCapa").files[0];
+  if(arquivoCapa){
+    msg.textContent = "Enviando capa...";
+    const r = await enviarCapa(arquivoCapa);
+    if(r.erro){
+      await supabaseClient.storage.from("ebooks-privados").remove([caminho]);
+      msg.textContent = r.erro;
+      botao.disabled = false;
+      return false;
+    }
+    capaCaminho = r.path;
+  }
+
   const { error } = await supabaseClient.from("ebooks").insert([{
     titulo: document.getElementById("pTitulo").value.trim(),
     categoria: document.getElementById("pCategoria").value,
     preco,
     preco_antigo: paraNumero(document.getElementById("pPrecoAntigo").value.trim()),
     arquivo_path: caminho,
+    capa_path: capaCaminho,
     autor_email: session.user.email
   }]);
 
   if(error){
     // desfaz o upload se o cadastro falhou
     await supabaseClient.storage.from("ebooks-privados").remove([caminho]);
+    if(capaCaminho) await supabaseClient.storage.from("capas-ebooks").remove([capaCaminho]);
     msg.textContent = error.message;
     botao.disabled = false;
     return false;
@@ -771,6 +838,7 @@ function editarEbook(id){
   document.getElementById("aCategoria").value = p.categoria || "";
   document.getElementById("aPreco").value = formatarPreco(p.preco);
   document.getElementById("aPrecoAntigo").value = p.preco_antigo ? formatarPreco(p.preco_antigo) : "";
+  document.getElementById("aCapa").value = "";
   document.getElementById("adminMsg").textContent = "";
   document.getElementById("adminLista").style.display = "none";
   document.getElementById("adminEdicao").style.display = "block";
@@ -782,17 +850,35 @@ async function salvarEdicao(event){
   const preco = paraNumero(document.getElementById("aPreco").value.trim());
   if(preco === null || preco <= 0){ msg.textContent = "Preço inválido."; return false; }
 
+  const idEbook = Number(document.getElementById("aId").value);
+  const atualEbook = todosEbooks.find(x => x.id === idEbook);
+  const arquivoCapa = document.getElementById("aCapa").files[0];
+  let novaCapa = null;
+  if(arquivoCapa){
+    msg.textContent = "Enviando capa...";
+    novaCapa = await enviarCapa(arquivoCapa);
+    if(novaCapa.erro){ msg.textContent = novaCapa.erro; return false; }
+  }
+
   msg.textContent = "Salvando...";
-  const { data, error } = await supabaseClient.from("ebooks").update({
+  const dados = {
     titulo: document.getElementById("aTitulo").value.trim(),
     categoria: document.getElementById("aCategoria").value,
     preco,
     preco_antigo: paraNumero(document.getElementById("aPrecoAntigo").value.trim())
-  }).eq("id", document.getElementById("aId").value).select();
+  };
+  if(novaCapa) dados.capa_path = novaCapa.path;
+
+  const { data, error } = await supabaseClient.from("ebooks")
+    .update(dados).eq("id", idEbook).select();
 
   if(error || !data || data.length === 0){
+    if(novaCapa) await supabaseClient.storage.from("capas-ebooks").remove([novaCapa.path]);
     msg.textContent = error ? error.message : "Não foi possível salvar (sem permissão).";
     return false;
+  }
+  if(novaCapa && atualEbook?.capa_path){
+    await supabaseClient.storage.from("capas-ebooks").remove([atualEbook.capa_path]);
   }
   await carregarProdutos();
   mostrarAdminLista();
@@ -844,7 +930,7 @@ async function excluirEbook(id){
   msg.textContent = "Excluindo...";
 
   const { data: atual } = await supabaseClient
-    .from("ebooks").select("arquivo_path").eq("id", id).single();
+    .from("ebooks").select("arquivo_path,capa_path").eq("id", id).single();
 
   const { data, error } = await supabaseClient.from("ebooks").delete().eq("id", id).select();
   if(error || !data || data.length === 0){
@@ -854,6 +940,9 @@ async function excluirEbook(id){
 
   if(atual?.arquivo_path){
     await supabaseClient.storage.from("ebooks-privados").remove([atual.arquivo_path]);
+  }
+  if(atual?.capa_path){
+    await supabaseClient.storage.from("capas-ebooks").remove([atual.capa_path]);
   }
   await carregarProdutos();
   mostrarAdminLista();
